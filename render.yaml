@@ -1,0 +1,46 @@
+services:
+  # ── Backend (Node.js + Socket.IO) ──
+  - type: web
+    name: bharatpulse-server
+    runtime: node
+    region: singapore     # closest to India
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CLIENT_URL
+        sync: false        # set this manually to your Static Site URL
+      - key: NEWS_API_KEY
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: ALPHA_VANTAGE_KEY
+        sync: false
+      - key: AQICN_API_KEY
+        sync: false
+      - key: MAPBOX_TOKEN
+        sync: false
+
+  # ── Frontend (Vite Static Site) ──
+  - type: web
+    name: bharatpulse-client
+    runtime: static
+    region: singapore
+    plan: free
+    rootDir: client
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_SERVER_URL
+        sync: false        # set this to your server's Render URL (e.g. https://bharatpulse-server.onrender.com)
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=0, must-revalidate
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

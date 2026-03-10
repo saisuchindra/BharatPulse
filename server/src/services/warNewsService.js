@@ -1,337 +1,425 @@
 /**
  * War News Intelligence Service
- * Generates hyper-realistic, second-by-second war bulletins covering
- * every major active conflict zone with India-impact analysis.
+ * Fetches real geopolitical/conflict news from GDELT API (free, no key).
+ * Enhanced with NASA EONET (disasters) and USGS (earthquakes) — all free.
+ * Falls back to generated bulletins if APIs fail.
  *
- * Each tick produces a new bulletin with:
+ * Each bulletin includes:
  *   - headline, body, source, severity, conflict zone, timestamp
- *   - casualty / displacement estimates
  *   - India impact angle
  *   - verification status
  */
+const axios = require('axios');
+const logger = require('../utils/logger');
 
 /* ═══════════════ CONFLICT THEATERS ═══════════════ */
 const THEATERS = [
-  {
-    id: 'iran-israel',
-    name: 'Iran–Israel–US War',
-    region: 'Middle East',
-    tags: ['oil', 'strait-of-hormuz', 'missile', 'nuclear'],
-    indiaAngle: 'Oil supply, 9M Indian diaspora in Gulf, shipping disruption',
-    severityBase: 9,
-  },
-  {
-    id: 'russia-ukraine',
-    name: 'Russia–Ukraine War',
-    region: 'Eastern Europe',
-    tags: ['energy', 'grain', 'sanctions', 'NATO'],
-    indiaAngle: 'Fertilizer & wheat imports, defence spares, energy prices',
-    severityBase: 8,
-  },
-  {
-    id: 'israel-palestine',
-    name: 'Israel–Palestine (Gaza)',
-    region: 'Middle East',
-    tags: ['humanitarian', 'ceasefire', 'UN'],
-    indiaAngle: 'Diaspora safety, diplomatic balancing, oil route proximity',
-    severityBase: 8,
-  },
-  {
-    id: 'red-sea',
-    name: 'Red Sea / Houthi Attacks',
-    region: 'Red Sea / Yemen',
-    tags: ['shipping', 'Suez', 'trade'],
-    indiaAngle: 'Shipping costs +300%, Suez rerouting, export delays',
-    severityBase: 7,
-  },
-  {
-    id: 'myanmar',
-    name: 'Myanmar Civil War',
-    region: 'Southeast Asia',
-    tags: ['refugees', 'border', 'junta'],
-    indiaAngle: 'Northeast border security, Manipur refugee influx',
-    severityBase: 6,
-  },
-  {
-    id: 'south-china-sea',
-    name: 'South China Sea Tensions',
-    region: 'Indo-Pacific',
-    tags: ['navy', 'Taiwan', 'QUAD'],
-    indiaAngle: 'Trade route security, QUAD alliance, naval deployments',
-    severityBase: 5,
-  },
-  {
-    id: 'india-china-lac',
-    name: 'India–China LAC',
-    region: 'Ladakh / Arunachal',
-    tags: ['LAC', 'PLA', 'Galwan'],
-    indiaAngle: 'Direct national security, defence budget, troop deployment',
-    severityBase: 5,
-  },
-  {
-    id: 'sudan',
-    name: 'Sudan Civil War',
-    region: 'East Africa',
-    tags: ['humanitarian', 'famine', 'RSF'],
-    indiaAngle: 'Indian nationals evacuation, UNSC diplomacy',
-    severityBase: 6,
-  },
+  { id: 'iran-israel', name: 'Iran–Israel–US War', region: 'Middle East', tags: ['oil', 'strait-of-hormuz', 'missile', 'nuclear'], indiaAngle: 'Oil supply, 9M Indian diaspora in Gulf, shipping disruption', severityBase: 9 },
+  { id: 'russia-ukraine', name: 'Russia–Ukraine War', region: 'Eastern Europe', tags: ['energy', 'grain', 'sanctions', 'NATO'], indiaAngle: 'Fertilizer & wheat imports, defence spares, energy prices', severityBase: 8 },
+  { id: 'israel-palestine', name: 'Israel–Palestine (Gaza)', region: 'Middle East', tags: ['humanitarian', 'ceasefire', 'UN'], indiaAngle: 'Diaspora safety, diplomatic balancing, oil route proximity', severityBase: 8 },
+  { id: 'red-sea', name: 'Red Sea / Houthi Attacks', region: 'Red Sea / Yemen', tags: ['shipping', 'Suez', 'trade'], indiaAngle: 'Shipping costs +300%, Suez rerouting, export delays', severityBase: 7 },
+  { id: 'myanmar', name: 'Myanmar Civil War', region: 'Southeast Asia', tags: ['refugees', 'border', 'junta'], indiaAngle: 'Northeast border security, Manipur refugee influx', severityBase: 6 },
+  { id: 'south-china-sea', name: 'South China Sea Tensions', region: 'Indo-Pacific', tags: ['navy', 'Taiwan', 'QUAD'], indiaAngle: 'Trade route security, QUAD alliance, naval deployments', severityBase: 5 },
+  { id: 'india-china-lac', name: 'India–China LAC', region: 'Ladakh / Arunachal', tags: ['LAC', 'PLA', 'Galwan'], indiaAngle: 'Direct national security, defence budget, troop deployment', severityBase: 5 },
+  { id: 'sudan', name: 'Sudan Civil War', region: 'East Africa', tags: ['humanitarian', 'famine', 'RSF'], indiaAngle: 'Indian nationals evacuation, UNSC diplomacy', severityBase: 6 },
 ];
 
-/* ═══════════════ HEADLINE TEMPLATES PER THEATER ═══════════════ */
-const HEADLINES = {
-  'iran-israel': [
-    'BREAKING: Israeli jets strike {target} deep inside Iran — multiple explosions reported',
-    'Pentagon confirms {n} US cruise missiles launched at Iranian nuclear facility near {city}',
-    'Iran fires {n} ballistic missiles at Israel — Iron Dome intercepts most, {n2} impact in {city}',
-    'Strait of Hormuz partially blocked — {n} tankers stranded, oil jumps ${price}/bbl',
-    'IRGC retaliates: Drone swarm targets US carrier group in Gulf of Oman',
-    'Emergency UN Security Council session called as Iran vows "decisive response"',
-    'Indian Navy deploys warships to Arabian Sea to protect shipping lanes',
-    'US deploys B-2 bombers to Diego Garcia — Indian Ocean build-up accelerates',
-    'Iran shoots down US surveillance drone over Strait of Hormuz',
-    'Massive cyberattack hits Iranian power grid — suspected Israeli/US operation',
-    'Hezbollah launches {n} rockets into northern Israel in solidarity with Tehran',
-    'India evacuates {n} nationals from Dubai, Abu Dhabi on special Air India flights',
-    'Oil prices surge to ${price}/bbl — highest since 2008 as Hormuz shipping halted',
-    'Iranian Revolutionary Guard seizes {n} commercial vessels in Persian Gulf',
-    'Israel activates full Iron Dome, Arrow-3 systems as Iran launches second wave',
-    'Pentagon: "{n} US service members wounded in Iranian missile strike on Al Dhafra base"',
-    'India-Iran Chabahar port operations suspended amid escalating airstrikes',
-    'CIA intercepts suggest Iran accelerating nuclear weapon assembly',
-    'Turkish airspace closed to military overflights — NATO emergency consultations',
-    'Crude oil futures hit ${price} — India faces ₹15/L petrol hike if sustained',
-  ],
-  'russia-ukraine': [
-    'Russia launches massive {n}-drone strike on Kyiv — power grid severely damaged',
-    'Ukrainian forces recapture {city} in surprise counter-offensive',
-    'NATO emergency summit as Russian hypersonic missile hits target near Polish border',
-    'Russia threatens tactical nuclear response if Ukraine strikes deeper into territory',
-    'Black Sea grain corridor suspended — wheat futures surge {n}%',
-    'Indian refinery imports of Russian crude reach record {n}M barrels/month',
-    'Zelensky appeals to India PM for mediation — New Delhi maintains "diplomatic channels"',
-    'Russia cuts natural gas to Europe — EU declares energy emergency',
-    'Wagner-linked forces advance in {city} — fierce urban combat reported',
-    'Ukraine deploys long-range ATACMS missiles — strikes Russian airbase in Crimea',
-    'Putin signs decree for partial military mobilisation — {n} additional troops',
-    'Satellite images show massive Russian troop movement near {city}',
-    'UN reports {n}+ civilian casualties in latest Kharkiv bombardment',
-    'India abstains on UNSC resolution condemning Russian escalation',
-    'European gas prices spike {n}% — India LNG imports surge in cost',
-  ],
-  'israel-palestine': [
-    'IDF begins new operation in {city} — heavy airstrikes across northern Gaza',
-    'Gaza health ministry reports {n} killed in latest 24 hours of bombardment',
-    'Humanitarian corridor opens briefly — {n} aid trucks enter southern Gaza',
-    'Ceasefire talks collapse in Cairo — Hamas rejects latest terms',
-    'ICJ issues emergency ruling ordering Israel to prevent genocide in Gaza',
-    'India sends {n} tonnes of humanitarian aid to Gaza through Egypt',
-    'UN agencies warn of imminent famine in Gaza — {n}M at catastrophic hunger levels',
-    'Israel-Lebanon border: Hezbollah exchanges heavy fire with IDF',
-    'UNRWA suspends operations in northern Gaza — staff safety concerns',
-    'West Bank raids intensify — {n} arrested in overnight operation',
-  ],
-  'red-sea': [
-    'Houthi anti-ship missile damages {name} tanker in Bab al-Mandeb strait',
-    'US/UK launch joint strike on Houthi positions in Yemen — {n} targets hit',
-    'Major shipping lines reroute via Cape of Good Hope — {n} days added to voyage',
-    'Indian Navy\'s INS {name} escorts {n} merchant vessels through Red Sea corridor',
-    'Suez Canal traffic drops {n}% — shipping insurance premiums quadruple',
-    'Houthi spokesperson: "All ships linked to Israel, US, UK are legitimate targets"',
-    'India-bound container ship struck by Houthi drone — crew safe, ship damaged',
-    'Freight rates from Europe to India up {n}% since Houthi attacks began',
-    'Pentagon deploys additional destroyer to Red Sea — Houthis unfazed',
-    'Egyptian economy suffers as Suez Canal revenues plunge {n}%',
-  ],
-  'myanmar': [
-    'Resistance forces capture {city} — junta loses control of key border crossing',
-    'Myanmar military launches airstrikes on civilian areas in {region}',
-    '{n} refugees cross into India\'s Mizoram — relief camps overwhelmed',
-    'India tightens border security as Myanmar conflict spills over',
-    'EAO alliance captures major military base near Chinese border',
-    'UN reports {n}+ civilian deaths in Myanmar since February 2021 coup',
-    'India suspends Free Movement Regime along Myanmar border',
-    'Junta imposes martial law in {city} — internet blackout reported',
-  ],
-  'south-china-sea': [
-    'Chinese coast guard ships surround Philippine vessel near {reef}',
-    'US Navy conducts freedom of navigation patrol through Taiwan Strait',
-    'China deploys aircraft carrier Fujian to South China Sea — regional alarm',
-    'QUAD nations announce joint naval exercise in Indo-Pacific',
-    'India deploys P-8I Poseidon aircraft to Andaman & Nicobar forward base',
-    'Taiwan reports {n} PLA aircraft in ADIZ — highest incursion this year',
-    'Philippines invokes MDT with US after South China Sea confrontation',
-    'India-Vietnam defence pact strengthened amid China aggression',
-  ],
-  'india-china-lac': [
-    'Satellite imagery reveals new Chinese structures at LAC near {sector}',
-    'Indian Army deploys additional brigade to eastern Ladakh',
-    'China-India Corps Commander talks end without breakthrough',
-    'PLA conducts live-fire exercise {n}km from Indian positions in Ladakh',
-    'India activates Rafale squadron at Ambala for LAC readiness',
-    'Border Roads Organisation completes strategic road to Daulat Beg Oldi',
-    'Arunachal Pradesh: India builds permanent forward posts near McMahon Line',
-    'India tests BrahMos missile capable of reaching Chinese positions across LAC',
-  ],
-  'sudan': [
-    'RSF forces advance on El Fasher — UN warns of "potential genocide" in Darfur',
-    '{n}+ killed in artillery exchange in Khartoum — hospitals overwhelmed',
-    'India evacuates {n} nationals from Port Sudan via INS warship',
-    'Sudan famine: {n}M face acute hunger — worst crisis in decades',
-    'SAF airstrikes hit RSF positions in Omdurman — civilian casualties feared',
-    'UN humanitarian aid cut off as fighting blocks access to {region}',
-    'African Union calls for ceasefire — both sides reject mediation',
-    'Indian medical team deployed to Port Sudan for diaspora assistance',
-  ],
+// Keyword-to-theater mapping for classifying GDELT articles
+const THEATER_KEYWORDS = {
+  'iran-israel': ['iran', 'israel', 'tehran', 'idf', 'irgc', 'hormuz', 'hezbollah', 'mossad'],
+  'russia-ukraine': ['ukraine', 'russia', 'kyiv', 'moscow', 'zelensky', 'putin', 'donbas', 'crimea', 'nato'],
+  'israel-palestine': ['gaza', 'palestine', 'hamas', 'west bank', 'rafah', 'ceasefire'],
+  'red-sea': ['houthi', 'red sea', 'yemen', 'bab al-mandeb', 'suez'],
+  'myanmar': ['myanmar', 'burma', 'junta', 'rohingya'],
+  'south-china-sea': ['south china sea', 'taiwan', 'strait', 'philippines', 'spratly'],
+  'india-china-lac': ['india china', 'lac', 'ladakh', 'arunachal', 'galwan', 'line of actual control'],
+  'sudan': ['sudan', 'khartoum', 'darfur', 'rsf', 'rapid support'],
 };
-
-/* ═══════════════ BODY TEMPLATES ═══════════════ */
-const BODY_TEMPLATES = [
-  'Military sources confirm the strike hit {detail}. {n} casualties reported so far. Emergency responders on scene. The escalation marks a significant {adj} in the conflict.',
-  'Intelligence agencies report {detail}. Satellite imagery corroborates ground reports. The UN Secretary-General has called for immediate de-escalation.',
-  'Multiple verified sources indicate {detail}. Defence analysts say this represents a major shift in the conflict dynamics. India\'s Ministry of External Affairs is monitoring the situation closely.',
-  'Ground reporters confirm {detail}. Social media footage, verified by OSINT analysts, shows {visual}. Regional powers have been alerted.',
-  'The latest development follows {detail}. Strategic analysts warn this could trigger a wider regional escalation. Global markets reacting to the uncertainty.',
-  'BREAKING UPDATE: {detail}. Diplomatic channels active between major powers. India has activated its crisis management team for the region.',
-];
-
-const DETAILS = [
-  'a military command centre, destroying key communications infrastructure',
-  'a major ammunition depot, with secondary explosions continuing for hours',
-  'troop concentrations along the frontline, causing significant disruption',
-  'critical infrastructure including power stations and bridges',
-  'defensive positions, breaching the forward line of defence',
-  'a strategic airfield, destroying several aircraft on the ground',
-  'a naval facility, damaging multiple vessels in port',
-  'supply routes essential for ongoing military operations',
-  'radar installations and air defence batteries',
-  'a government building in the capital, raising fears of leadership targeting',
-];
-
-const VISUALS = [
-  'heavy smoke rising from multiple points in the target area',
-  'large-scale military vehicle movements on major highways',
-  'civilians fleeing in packed vehicles along evacuation corridors',
-  'anti-aircraft fire illuminating the night sky over the city',
-  'rescue teams pulling survivors from collapsed structures',
-  'military aircraft conducting low-altitude sorties',
-];
-
-const SOURCES = [
-  'Reuters', 'AP', 'AFP', 'Al Jazeera', 'BBC', 'OSINT analysts',
-  'Pentagon spokesperson', 'IDF spokesperson', 'IRGC statement',
-  'Ukrainian General Staff', 'Russian MOD', 'Indian MEA',
-  'UN OCHA', 'CENTCOM', 'NATO HQ', 'Indian Navy PRO',
-  'Xinhua', 'ANI', 'PTI', 'NDTV', 'India Today',
-];
-
-const VERIFICATION = ['CONFIRMED', 'CONFIRMED', 'CONFIRMED', 'DEVELOPING', 'DEVELOPING', 'UNVERIFIED'];
-
-/* ═══════════════ HELPERS ═══════════════ */
-const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-
-const CITIES = {
-  'iran-israel': ['Tehran', 'Isfahan', 'Natanz', 'Bandar Abbas', 'Bushehr', 'Shiraz', 'Haifa', 'Tel Aviv', 'Eilat'],
-  'russia-ukraine': ['Kyiv', 'Kharkiv', 'Odessa', 'Zaporizhzhia', 'Bakhmut', 'Donetsk', 'Sevastopol', 'Mykolaiv'],
-  'israel-palestine': ['Gaza City', 'Rafah', 'Khan Younis', 'Jabalia', 'Deir al-Balah', 'Nuseirat'],
-  'red-sea': ['Hodeidah', 'Sanaa', 'Aden', 'Mocha'],
-  'myanmar': ['Mandalay', 'Myitkyina', 'Lashio', 'Sagaing', 'Chin State'],
-  'south-china-sea': ['Scarborough Shoal', 'Spratly Islands', 'Paracel Islands', 'Second Thomas Shoal'],
-  'india-china-lac': ['Depsang Plains', 'Hot Springs', 'Demchok', 'Chumar', 'Tawang'],
-  'sudan': ['Khartoum', 'El Fasher', 'Omdurman', 'Port Sudan', 'Wad Madani'],
-};
-
-const SHIP_NAMES = ['Maersk Hangzhou', 'MSC Palatium', 'CMA CGM Unity', 'OOCL Horizon', 'Evergreen Fortune'];
-const INS_NAMES = ['Vikrant', 'Kolkata', 'Chennai', 'Visakhapatnam', 'Imphal', 'Shivalik'];
-const TARGETS = ['air defence network', 'missile launch sites', 'command bunker', 'naval port', 'radar array', 'fuel storage depot'];
-const SECTORS = ['Depsang', 'Hot Springs', 'Gogra', 'Galwan', 'Pangong', 'Demchok'];
-const REEFS = ['Scarborough Shoal', 'Second Thomas Shoal', 'Mischief Reef', 'Whitsun Reef'];
-
-function fillTemplate(template, theaterId) {
-  const cities = CITIES[theaterId] || ['the capital'];
-  return template
-    .replace(/\{city\}/g, pick(cities))
-    .replace(/\{target\}/g, pick(TARGETS))
-    .replace(/\{n2\}/g, String(rand(1, 8)))
-    .replace(/\{n\}/g, String(rand(3, 200)))
-    .replace(/\{price\}/g, String(rand(105, 180)))
-    .replace(/\{name\}/g, pick([...SHIP_NAMES, ...INS_NAMES]))
-    .replace(/\{region\}/g, pick(cities))
-    .replace(/\{reef\}/g, pick(REEFS))
-    .replace(/\{sector\}/g, pick(SECTORS))
-    .replace(/\{detail\}/g, pick(DETAILS))
-    .replace(/\{adj\}/g, pick(['escalation', 'turning point', 'provocation', 'development']))
-    .replace(/\{visual\}/g, pick(VISUALS));
-}
 
 /* ═══════════════ STATE ═══════════════ */
 let bulletins = [];
 const MAX_BULLETINS = 150;
 let bulletinId = 0;
+let activeSources = new Set();
 
-/* ═══════════════ GENERATE ONE BULLETIN ═══════════════ */
-function generateBulletin() {
+/* ═══════════════ RSS WAR NEWS (ALWAYS FREE, NO RATE LIMITS) ═══════════════ */
+const WAR_RSS_FEEDS = [
+  { url: 'https://feeds.bbci.co.uk/news/world/rss.xml', source: 'BBC World' },
+  { url: 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml', source: 'NYT World' },
+  { url: 'https://www.aljazeera.com/xml/rss/all.xml', source: 'Al Jazeera' },
+  { url: 'https://timesofindia.indiatimes.com/rssfeeds/4719161.cms', source: 'TOI World' },
+  { url: 'https://www.thehindu.com/news/international/feeder/default.rss', source: 'The Hindu Intl' },
+  { url: 'https://economictimes.indiatimes.com/news/defence/rssfeeds/64905395.cms', source: 'ET Defence' },
+];
+
+// Keywords that identify war/conflict/security articles
+const WAR_KEYWORDS = /\b(war|conflict|military|strike|missile|attack|troops|ceasefire|escalation|nuclear|sanctions|blockade|invasion|terror|army|navy|airforce|defense|defence|bomb|drone|weapon|soldier|casualties|killed|airstrike|shelling|combat|frontline|battlefield|offensive|deployed|insurgent|militia|guerrilla|siege|hostage|hostilities|armed|rebel|border\s?clash|incursion|occupation|genocide|amphibious)\b/i;
+
+async function fetchRssWarNews() {
+  try {
+    const results = await Promise.allSettled(
+      WAR_RSS_FEEDS.map(feed =>
+        axios.get(feed.url, { timeout: 10000, responseType: 'text' })
+          .then(res => ({ data: res.data, source: feed.source }))
+      )
+    );
+
+    let newBulletins = [];
+
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue;
+      const { data, source } = result.value;
+
+      // Simple XML parse for RSS items
+      const items = data.match(/<item[\s\S]*?<\/item>/gi) || [];
+      for (const item of items) {
+        const titleMatch = item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
+        const linkMatch = item.match(/<link[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/i);
+        const pubDateMatch = item.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/i);
+        const descMatch = item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i);
+
+        const title = (titleMatch?.[1] || '').replace(/<[^>]+>/g, '').trim();
+        if (!title || title.length < 15) continue;
+
+        // Only include articles matching war/conflict keywords
+        if (!WAR_KEYWORDS.test(title) && !WAR_KEYWORDS.test(descMatch?.[1] || '')) continue;
+
+        const theater = classifyArticle(title);
+        const theaterInfo = THEATERS.find(t => t.id === theater) || THEATERS[0];
+        const severity = determineSeverity(title, theaterInfo.severityBase);
+
+        const rawDate = pubDateMatch?.[1]?.trim();
+        let parsedTs;
+        try { parsedTs = rawDate ? new Date(rawDate).toISOString() : new Date().toISOString(); }
+        catch { parsedTs = new Date().toISOString(); }
+
+        newBulletins.push({
+          id: `rss-${++bulletinId}`,
+          timestamp: parsedTs,
+          theater: theaterInfo.name,
+          theaterId: theaterInfo.id,
+          region: theaterInfo.region,
+          headline: title,
+          body: (descMatch?.[1] || '').replace(/<[^>]+>/g, '').trim().slice(0, 300) || `Source: ${source}. Monitoring for India-impact implications.`,
+          source,
+          sourceUrl: linkMatch?.[1]?.trim() || '',
+          severity: severity.label,
+          severityScore: severity.score,
+          indiaImpact: theaterInfo.indiaAngle,
+          verification: 'CONFIRMED',
+          tags: theaterInfo.tags,
+          casualtyEstimate: severity.score >= 8 ? 'Multiple reported' : severity.score >= 5 ? 'Developing' : 'Unknown',
+          isBreaking: severity.score >= 8,
+          liveSource: `RSS:${source}`,
+        });
+      }
+    }
+
+    if (newBulletins.length > 0) {
+      // Sort by date, newest first (safe parse)
+      newBulletins.sort((a, b) => {
+        const da = new Date(a.timestamp).getTime() || 0;
+        const db = new Date(b.timestamp).getTime() || 0;
+        return db - da;
+      });
+      newBulletins = newBulletins.slice(0, 50); // Keep top 50
+      bulletins = [...newBulletins, ...bulletins.filter(b => !b.id.startsWith('rss-'))].slice(0, MAX_BULLETINS);
+      activeSources.add('RSS');
+      logger.info(`[WarNews] ✓ RSS: ${newBulletins.length} war/conflict articles from ${WAR_RSS_FEEDS.length} feeds`);
+    }
+  } catch (err) {
+    logger.warn(`[WarNews] RSS war news fetch failed: ${err.message}`);
+  }
+}
+
+/* ═══════════════ GDELT ENRICHMENT (FREE, NO KEY — RATE LIMITED) ═══════════════ */
+async function fetchGdeltWarNews() {
+  try {
+    const queries = [
+      'war OR conflict OR military OR strike OR missile',
+      'India defense OR India border OR India security',
+    ];
+    const query = queries[Math.floor(Math.random() * queries.length)];
+    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(query)}&mode=ArtList&maxrecords=30&format=json&timespan=1d`;
+
+    const res = await axios.get(url, { timeout: 12000 });
+
+    if (res.data?.articles && res.data.articles.length > 0) {
+      const newBulletins = res.data.articles.map((a) => {
+        const title = (a.title || '').trim();
+        const theater = classifyArticle(title);
+        const theaterInfo = THEATERS.find(t => t.id === theater) || THEATERS[0];
+        const severity = determineSeverity(title, theaterInfo.severityBase);
+
+        return {
+          id: `gdelt-${++bulletinId}`,
+          timestamp: a.seendate ? formatGdeltDate(a.seendate) : new Date().toISOString(),
+          theater: theaterInfo.name,
+          theaterId: theaterInfo.id,
+          region: theaterInfo.region,
+          headline: title,
+          body: `Source: ${a.domain || 'International Media'}. Published ${a.seendate || 'recently'}. This event is being monitored for India-impact implications.`,
+          source: a.domain || 'GDELT',
+          sourceUrl: a.url || '',
+          severity: severity.label,
+          severityScore: severity.score,
+          indiaImpact: theaterInfo.indiaAngle,
+          verification: 'CONFIRMED',
+          tags: theaterInfo.tags,
+          casualtyEstimate: severity.score >= 8 ? 'Multiple reported' : severity.score >= 5 ? 'Developing' : 'Unknown',
+          isBreaking: severity.score >= 8,
+          liveSource: 'GDELT',
+        };
+      }).filter(b => b.headline.length > 15);
+
+      if (newBulletins.length > 0) {
+        bulletins = [...newBulletins, ...bulletins.filter(b => !b.id.startsWith('gdelt-'))].slice(0, MAX_BULLETINS);
+        activeSources.add('GDELT');
+        logger.info(`[WarNews] ✓ GDELT: ${newBulletins.length} real war/conflict articles ingested`);
+      }
+    }
+  } catch (err) {
+    logger.warn(`[WarNews] GDELT fetch failed (rate-limit?): ${err.message}`);
+  }
+}
+
+/* ═══════════════ NASA EONET (FREE, NO KEY) ═══════════════ */
+async function fetchNasaDisasters() {
+  try {
+    const url = 'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=20';
+    const res = await axios.get(url, { timeout: 10000 });
+
+    if (res.data?.events && res.data.events.length > 0) {
+      const disasterBulletins = res.data.events.map(e => {
+        const geo = e.geometry?.[0];
+        const coords = geo?.coordinates || [];
+        return {
+          id: `nasa-${++bulletinId}`,
+          timestamp: geo?.date || new Date().toISOString(),
+          theater: 'Natural Disaster',
+          theaterId: 'disaster',
+          region: 'Global',
+          headline: `🌍 DISASTER: ${e.title}`,
+          body: `Category: ${e.categories?.[0]?.title || 'Unknown'}. Location: ${coords[1]?.toFixed(2) || '?'}°N, ${coords[0]?.toFixed(2) || '?'}°E. Source: NASA EONET.`,
+          source: 'NASA EONET',
+          sourceUrl: e.link || '',
+          severity: 'HIGH',
+          severityScore: 7,
+          indiaImpact: assessDisasterIndiaImpact(e),
+          verification: 'CONFIRMED',
+          tags: ['disaster', e.categories?.[0]?.title?.toLowerCase() || 'natural'],
+          casualtyEstimate: 'Monitoring',
+          isBreaking: true,
+          liveSource: 'NASA EONET',
+        };
+      });
+
+      bulletins = [...disasterBulletins, ...bulletins].slice(0, MAX_BULLETINS);
+      activeSources.add('NASA EONET');
+      logger.info(`[WarNews] ✓ NASA EONET: ${disasterBulletins.length} active disaster events`);
+    }
+  } catch (err) {
+    logger.warn(`[WarNews] NASA EONET fetch failed: ${err.message}`);
+  }
+}
+
+/* ═══════════════ USGS EARTHQUAKE (FREE, NO KEY) ═══════════════ */
+async function fetchEarthquakes() {
+  try {
+    const url = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/significant_week.geojson';
+    const res = await axios.get(url, { timeout: 10000 });
+
+    if (res.data?.features && res.data.features.length > 0) {
+      const quakeBulletins = res.data.features.map(f => {
+        const props = f.properties;
+        const coords = f.geometry?.coordinates || [];
+        const magnitude = props.mag || 0;
+
+        return {
+          id: `usgs-${++bulletinId}`,
+          timestamp: new Date(props.time).toISOString(),
+          theater: 'Natural Disaster',
+          theaterId: 'earthquake',
+          region: props.place || 'Unknown',
+          headline: `🔴 EARTHQUAKE M${magnitude.toFixed(1)}: ${props.place || 'Unknown location'}`,
+          body: `Magnitude ${magnitude.toFixed(1)} earthquake detected. Depth: ${coords[2]?.toFixed(1) || '?'}km. ${props.tsunami ? 'TSUNAMI WARNING ISSUED.' : 'No tsunami warning.'} Source: USGS.`,
+          source: 'USGS',
+          sourceUrl: props.url || '',
+          severity: magnitude >= 7 ? 'CRITICAL' : magnitude >= 5.5 ? 'HIGH' : 'MEDIUM',
+          severityScore: Math.min(10, Math.round(magnitude)),
+          indiaImpact: assessQuakeIndiaImpact(props.place, magnitude),
+          verification: 'CONFIRMED',
+          tags: ['earthquake', 'disaster', props.tsunami ? 'tsunami' : 'seismic'],
+          casualtyEstimate: magnitude >= 7 ? 'Potential mass casualties' : magnitude >= 5.5 ? 'Casualties possible' : 'Minimal expected',
+          isBreaking: magnitude >= 6.0,
+          liveSource: 'USGS',
+        };
+      });
+
+      bulletins = [...quakeBulletins, ...bulletins].slice(0, MAX_BULLETINS);
+      activeSources.add('USGS');
+      logger.info(`[WarNews] ✓ USGS: ${quakeBulletins.length} significant earthquakes`);
+    }
+  } catch (err) {
+    logger.warn(`[WarNews] USGS fetch failed: ${err.message}`);
+  }
+}
+
+/* ═══════════════ HELPERS ═══════════════ */
+
+function classifyArticle(title) {
+  const lower = title.toLowerCase();
+  for (const [theaterId, keywords] of Object.entries(THEATER_KEYWORDS)) {
+    if (keywords.some(kw => lower.includes(kw))) return theaterId;
+  }
+  return 'iran-israel'; // Default to highest-severity theater
+}
+
+function determineSeverity(title, baseSeverity) {
+  const lower = title.toLowerCase();
+  let score = baseSeverity;
+  if (lower.includes('breaking') || lower.includes('urgent')) score = Math.min(10, score + 2);
+  if (lower.includes('killed') || lower.includes('dead') || lower.includes('casualties')) score = Math.min(10, score + 1);
+  if (lower.includes('nuclear') || lower.includes('invasion')) score = Math.min(10, score + 2);
+  if (lower.includes('ceasefire') || lower.includes('peace') || lower.includes('talks')) score = Math.max(1, score - 2);
+
+  const label = score >= 9 ? 'CRITICAL' : score >= 7 ? 'HIGH' : score >= 5 ? 'MEDIUM' : 'LOW';
+  return { score, label };
+}
+
+function formatGdeltDate(dateStr) {
+  try {
+    // GDELT format: "20260306T120000Z" or similar
+    if (dateStr.length === 14) {
+      return new Date(`${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)}T${dateStr.slice(8,10)}:${dateStr.slice(10,12)}:${dateStr.slice(12,14)}Z`).toISOString();
+    }
+    return new Date(dateStr).toISOString();
+  } catch {
+    return new Date().toISOString();
+  }
+}
+
+function assessDisasterIndiaImpact(event) {
+  const title = (event.title || '').toLowerCase();
+  if (title.includes('india') || title.includes('bay of bengal') || title.includes('arabian sea')) {
+    return 'DIRECT impact on India — disaster response activated';
+  }
+  if (title.includes('pacific') || title.includes('indonesia') || title.includes('nepal')) {
+    return 'Regional proximity — India monitoring and ready to assist';
+  }
+  return 'Global event — India tracking for humanitarian response';
+}
+
+function assessQuakeIndiaImpact(place, magnitude) {
+  const lower = (place || '').toLowerCase();
+  if (lower.includes('india') || lower.includes('nepal') || lower.includes('pakistan') || lower.includes('afghanistan')) {
+    return `DIRECT — M${magnitude.toFixed(1)} earthquake in India\'s neighborhood, potential impact on Indian territory`;
+  }
+  if (lower.includes('indonesia') || lower.includes('myanmar') || lower.includes('iran')) {
+    return `REGIONAL — Earthquake in India\'s extended neighborhood, tsunami/aftershock risk assessment ongoing`;
+  }
+  return `GLOBAL — Monitoring for impact on Indian interests and diaspora`;
+}
+
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+/* ═══════════════ FALLBACK GENERATED BULLETINS ═══════════════ */
+const FALLBACK_HEADLINES = {
+  'iran-israel': [
+    'Israeli jets strike targets deep inside Iran — explosions reported',
+    'Pentagon confirms US cruise missiles launched at Iranian facility',
+    'Strait of Hormuz disrupted — tankers stranded, oil surges',
+    'Indian Navy deploys warships to Arabian Sea to protect shipping',
+  ],
+  'russia-ukraine': [
+    'Russia launches massive drone strike on Kyiv — power grid damaged',
+    'Ukrainian forces recapture key positions in counter-offensive',
+    'Black Sea grain corridor suspended — wheat futures surge',
+    'India abstains on UNSC resolution condemning escalation',
+  ],
+  'israel-palestine': [
+    'IDF begins new operation in Gaza — heavy airstrikes reported',
+    'Humanitarian corridor opens — aid trucks enter southern Gaza',
+    'Ceasefire talks collapse — Hamas rejects latest terms',
+  ],
+  'red-sea': [
+    'Houthi missile damages tanker in Bab al-Mandeb strait',
+    'Indian Navy escorts merchant vessels through Red Sea corridor',
+    'Freight rates from Europe to India surge amid Houthi attacks',
+  ],
+};
+
+function generateFallbackBulletin() {
   const theater = pick(THEATERS);
-  const headlineTemplates = HEADLINES[theater.id] || HEADLINES['iran-israel'];
-  const headline = fillTemplate(pick(headlineTemplates), theater.id);
-  const bodyTemplate = pick(BODY_TEMPLATES);
-  const body = fillTemplate(bodyTemplate, theater.id);
-
+  const headlines = FALLBACK_HEADLINES[theater.id] || FALLBACK_HEADLINES['iran-israel'];
+  const headline = pick(headlines);
   const severityJitter = rand(-1, 1);
   const sev = Math.max(1, Math.min(10, theater.severityBase + severityJitter));
-  const severity = sev >= 9 ? 'CRITICAL' : sev >= 7 ? 'HIGH' : sev >= 5 ? 'MEDIUM' : 'LOW';
 
-  const bulletin = {
-    id: `war-${++bulletinId}`,
+  return {
+    id: `gen-${++bulletinId}`,
     timestamp: new Date().toISOString(),
     theater: theater.name,
     theaterId: theater.id,
     region: theater.region,
     headline,
-    body,
-    source: pick(SOURCES),
-    severity,
+    body: `Intelligence sources confirm ongoing developments. India\'s MEA is monitoring. Strategic analysts assess regional implications.`,
+    source: pick(['Reuters', 'AP', 'AFP', 'Al Jazeera', 'BBC', 'ANI', 'PTI', 'NDTV']),
+    severity: sev >= 9 ? 'CRITICAL' : sev >= 7 ? 'HIGH' : sev >= 5 ? 'MEDIUM' : 'LOW',
     severityScore: sev,
     indiaImpact: theater.indiaAngle,
-    verification: pick(VERIFICATION),
+    verification: pick(['CONFIRMED', 'CONFIRMED', 'DEVELOPING']),
     tags: theater.tags,
-    casualtyEstimate: sev >= 7 ? `${rand(5, 500)}+ reported` : sev >= 5 ? `${rand(1, 50)} reported` : 'Minimal',
+    casualtyEstimate: sev >= 7 ? `${rand(5, 200)}+ reported` : 'Developing',
     isBreaking: sev >= 8 && Math.random() > 0.4,
+    liveSource: 'Generated',
   };
-
-  bulletins.unshift(bulletin);
-  if (bulletins.length > MAX_BULLETINS) bulletins = bulletins.slice(0, MAX_BULLETINS);
-  return bulletin;
 }
 
-/* ═══════════════ TICK — runs every 5 seconds ═══════════════ */
-function tick() {
-  // Generate 1-3 bulletins per tick for a dense news feed
-  const count = rand(1, 3);
-  for (let i = 0; i < count; i++) {
-    generateBulletin();
+/* ═══════════════ INITIALIZATION ═══════════════ */
+
+// Primary: RSS feeds (always available, no rate limits)
+fetchRssWarNews();
+// Enrichment: GDELT (may get rate-limited)
+fetchGdeltWarNews();
+// Disasters: NASA EONET + USGS (always free)
+fetchNasaDisasters();
+fetchEarthquakes();
+
+// Periodic refresh
+setInterval(fetchRssWarNews, 180000);    // RSS: every 3 min
+setInterval(fetchGdeltWarNews, 600000);  // GDELT: every 10 min (rate-limit safe)
+setInterval(fetchNasaDisasters, 600000); // NASA: every 10 min
+setInterval(fetchEarthquakes, 300000);   // USGS: every 5 min
+
+// Fallback ticker — only generates if no real data at all
+setInterval(() => {
+  if (activeSources.size === 0) {
+    const count = rand(1, 2);
+    for (let i = 0; i < count; i++) {
+      bulletins.unshift(generateFallbackBulletin());
+    }
+    if (bulletins.length > MAX_BULLETINS) bulletins = bulletins.slice(0, MAX_BULLETINS);
   }
-}
+}, 10000);
 
-// Auto-start ticking
-setInterval(tick, 5000);
-// Seed with initial batch
-for (let i = 0; i < 20; i++) generateBulletin();
+// Seed with fallback until async fetches complete (will be pushed down by real data)
+if (bulletins.length === 0) {
+  for (let i = 0; i < 5; i++) bulletins.unshift(generateFallbackBulletin());
+}
 
 /* ═══════════════ PUBLIC API ═══════════════ */
 function getWarNews() {
   return {
     timestamp: new Date().toISOString(),
+    liveSource: activeSources.size > 0 ? [...activeSources].join(' + ') : 'Generated',
     totalBulletins: bulletins.length,
     breakingCount: bulletins.filter(b => b.isBreaking).length,
     criticalCount: bulletins.filter(b => b.severity === 'CRITICAL').length,
     theaters: THEATERS.map(t => ({
-      id: t.id,
-      name: t.name,
-      region: t.region,
-      severityBase: t.severityBase,
-      indiaAngle: t.indiaAngle,
+      id: t.id, name: t.name, region: t.region,
+      severityBase: t.severityBase, indiaAngle: t.indiaAngle,
     })),
     bulletins: bulletins.slice(0, 80),
   };
